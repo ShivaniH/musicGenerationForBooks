@@ -1,0 +1,140 @@
+[
+    {
+        "uri":"spotify:track:3Z3v9Ur0sIr2B7HWMQmr90",
+        "album":"The Well-Tempered Clavier Part I, BWV 846-869",
+        "trackName":"Prelude and Fugue in C major BWV 846",
+        "artist":"Bach"
+    },
+    {
+        "uri":"spotify:track:5I9vReBv4RVccNvCOuFfaG",
+        "album":"The Well-Tempered Clavier Part I, BWV 846-869",
+        "trackName":"Prelude and Fugue in C minor BWV 847",
+        "artist":"Bach"
+    },
+    {
+        "uri":"spotify:track:0bvCOzWvDgxEVv4FXD2vFd",
+        "album":"The Well-Tempered Clavier Part I, BWV 846-869",
+        "trackName":"Prelude and Fugue in D major BWV 850",
+        "artist":"Bach"
+    },
+    {
+        "uri":"spotify:track:0YfdXXvvdlAAmaEd645DU7",
+        "album":"Sonata No. 5 C minor, Opus 10/1",
+        "trackName":"Movement 1",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:5Yx4QvQuYtc9A2scPt3Eb3",
+        "album":"Sonata No. 5 C minor, Opus 10/1",
+        "trackName":"Movement 2",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:0Ocy9PJDu0o19GChfeS5Kn",
+        "album":"Sonata No. 5 C minor, Opus 10/1",
+        "trackName":"Movement 3",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:3AY01LUYY9van76SztXPOD",
+        "album":"Sonata No. 11 Bb major, Opus 22",
+        "trackName":"Movement 1",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:0VcobL9P4NdUrsvzDO7hq3",
+        "album":"Sonata No. 11 Bb major, Opus 22",
+        "trackName":"Movement 2",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:7dzdQ6JzRyrrl0ZWe6I4WK",
+        "album":"Sonata No. 11 Bb major, Opus 22",
+        "trackName":"Movement 3",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:4cKy0wWetreRR4KGqyKww1",
+        "album":"Sonata No. 11 Bb major, Opus 22",
+        "trackName":"Movement 4",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:40Pq1gAnc3cpVIDPsHqolX",
+        "album":"Sonata No. 21 C major (Waldstein) , Opus 53",
+        "trackName":"Movement 1",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:5rxBOt3ZRxbquT4JortoQc",
+        "album":"Sonata No. 21 C major (Waldstein) , Opus 53",
+        "trackName":"Movement 2",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:4hTtEYkZNvXlaWUbMFIlH0",
+        "album":"Sonata No. 21 C major (Waldstein) , Opus 53",
+        "trackName":"Movement 3",
+        "artist":"Beethoven"
+    },
+    {
+        "uri":"spotify:track:5grwsXLYLC7VUyhsPcGx3e",
+        "album":"4 Piano pieces, Opus 119",
+        "trackName":"Rhapsodie",
+        "artist":"Brahms"
+    },
+    {
+        "uri":"spotify:track:1ypB8JYhYSaS3L5hxrWMYI",
+        "album":"5 Mazurkas, Opus 7",
+        "trackName":"No. 1",
+        "artist":"Chopin"
+    },
+    {
+        "uri": "spotify:track:6yv9U7VwfbyksdQly6wUkh",
+        "album":"5 Mazurkas, Opus 7",
+        "trackName":"No. 2",
+        "artist":"Chopin"
+    },
+    {
+        "uri": "spotify:track:0VsX33bhApF7Yy77wNye8h",
+        "album":"Etudes, Opus 10",
+        "trackName":"No. 1",
+        "artist":"Chopin"
+    },
+    {
+        "uri": "spotify:track:5qcNfdmqZQK28X7LVK2HcL",
+        "album":"Etudes, Opus 10",
+        "trackName":"No. 5",
+        "artist":"Chopin"
+    },
+    {
+        "uri": "spotify:track:5jvb1XrAOWN6VxlDUOMSJe",
+        "album":"Etudes, Opus 10",
+        "trackName":"No. 12",
+        "artist":"Chopin"
+    },
+    {
+        "uri":"spotify:track:2XWaGA6GiUSS1W3cv6HJEH",
+        "album":"Grande Valse Brillante, Opus 18",
+        "trackName":"Grande Valse Brillante",
+        "artist":"Chopin"
+    },
+    {
+        "uri":"spotify:track:3TLscI4ZXHSMRYIQEeLcvN",
+        "album":"Ballade G minor, Opus 23 ",
+        "trackName":"Ballade",
+        "artist":"Chopin"
+    },
+    {
+        "uri":"spotify:track:3PqBunpSR6CHAWc25XkhWw",
+        "album":"Études d'exécution transcendante",
+        "trackName":"No. 5 Feux Follets",
+        "artist":"Liszt"
+    },
+    {
+        "uri":"spotify:track:6jGbIqulL7i0mGeEyk4AOV",
+        "album":"Love dreams",
+        "trackName":"No. 3",
+        "artist":"Liszt"
+    }
+]
