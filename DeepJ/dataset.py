@@ -1,168 +1,89 @@
 """
 Preprocesses MIDI files
 """
-import math
 import numpy as np
-import torch
-
-import numpy
 import math
 import random
-from tqdm import tqdm
+from joblib import Parallel, delayed
 import multiprocessing
-import itertools
 
 from constants import *
-from midi_io import load_midi
+from midi_util import load_midi
 from util import *
 
-def load(styles=STYLES):
+def compute_beat(beat, notes_in_bar):
+    return one_hot(beat % notes_in_bar, notes_in_bar)
+
+def compute_completion(beat, len_melody):
+    return np.array([beat / len_melody])
+
+def compute_genre(genre_id):
+    """ Computes a vector that represents a particular genre """
+    genre_hot = np.zeros((NUM_STYLES,))
+    start_index = sum(len(s) for i, s in enumerate(styles) if i < genre_id)
+    styles_in_genre = len(styles[genre_id])
+    genre_hot[start_index:start_index + styles_in_genre] = 1 / styles_in_genre
+    return genre_hot
+
+def stagger(data, time_steps):
+    dataX, dataY = [], []
+    # Buffer training for first event
+    data = ([np.zeros_like(data[0])] * time_steps) + list(data)
+
+    # Chop a sequence into measures
+    for i in range(0, len(data) - time_steps, NOTES_PER_BAR):
+        dataX.append(data[i:i + time_steps])
+        dataY.append(data[i + 1:(i + time_steps + 1)])
+    return dataX, dataY
+
+def load_all(styles, batch_size, time_steps):
     """
-    Loads all music styles into a list of compositions
+    Loads all MIDI files as a piano roll.
+    (For Keras)
     """
-    style_seqs = []
-    for style in styles:
+    note_data = []
+    beat_data = []
+    style_data = []
+
+    note_target = []
+
+    # TODO: Can speed this up with better parallel loading. Order gaurentee.
+    styles = [y for x in styles for y in x]
+
+    for style_id, style in enumerate(styles):
+        style_hot = one_hot(style_id, NUM_STYLES)
         # Parallel process all files into a list of music sequences
-        style_seq = []
-        seq_len_sum = 0
+        seqs = Parallel(n_jobs=multiprocessing.cpu_count(), backend='threading')(delayed(load_midi)(f) for f in get_all_files([style]))
 
-        for f in tqdm(get_all_files([style])):
-            try:
-                # Pad the sequence by an empty event
-                seq = load_midi(f)
-                if len(seq) >= SEQ_LEN:
-                    style_seq.append(torch.from_numpy(seq).long())
-                    seq_len_sum += len(seq)
-                else:
-                    print('Ignoring {} because it is too short {}.'.format(f, len(seq)))
-            except Exception as e:
-                print('Unable to load {}'.format(f), e)
-        
-        style_seqs.append(style_seq)
-        print('Loading {} MIDI file(s) with average event count {}'.format(len(style_seq), seq_len_sum / len(style_seq)))
-    return style_seqs
+        for seq in seqs:
+            if len(seq) >= time_steps:
+                # Clamp MIDI to note range
+                seq = clamp_midi(seq)
+                # Create training data and labels
+                train_data, label_data = stagger(seq, time_steps)
+                note_data += train_data
+                note_target += label_data
 
-def process(style_seqs):
+                beats = [compute_beat(i, NOTES_PER_BAR) for i in range(len(seq))]
+                beat_data += stagger(beats, time_steps)[0]
+
+                style_data += stagger([style_hot for i in range(len(seq))], time_steps)[0]
+        print (style_id, "done")
+
+    note_data = np.array(note_data)
+    beat_data = np.array(beat_data)
+    style_data = np.array(style_data)
+    note_target = np.array(note_target)
+    return [note_data, note_target, beat_data, style_data], [note_target]
+
+def clamp_midi(sequence):
     """
-    Process data. Takes a list of styles and flattens the data, returning the necessary tags.
+    Clamps the midi base on the MIN and MAX notes
     """
-    # Flatten into compositions list
-    seqs = [s for y in style_seqs for s in y]
-    style_tags = torch.LongTensor([s for s, y in enumerate(style_seqs) for x in y])
-    return seqs, style_tags
+    return sequence[:, MIN_NOTE:MAX_NOTE, :]
 
-def validation_split(data, split=0.05):
+def unclamp_midi(sequence):
     """
-    Splits the data iteration list into training and validation indices
+    Restore clamped MIDI sequence back to MIDI note values
     """
-    seqs, style_tags = data
-
-    # Shuffle sequences randomly
-    r = list(range(len(seqs)))
-    random.shuffle(r)
-
-    num_val = int(math.ceil(len(r) * split))
-    train_indicies = r[:-num_val]
-    val_indicies = r[-num_val:]
-
-    assert len(val_indicies) == num_val
-    assert len(train_indicies) == len(r) - num_val
-
-    train_seqs = [seqs[i] for i in train_indicies]
-    val_seqs = [seqs[i] for i in val_indicies]
-
-    train_style_tags = [style_tags[i] for i in train_indicies]
-    val_style_tags = [style_tags[i] for i in val_indicies]
-    
-    return (train_seqs, train_style_tags), (val_seqs, val_style_tags)
-
-def sampler(data):
-    """
-    Generates sequences of data.
-    """
-    seqs, style_tags = data
-
-    if len(seqs) == 0:
-        raise 'Insufficient training data.'
-
-    def sample(seq_len):
-        # Pick random sequence
-        seq_id = random.randint(0, len(seqs) - 1)
-        seq = seqs[seq_id]
-        # Pick random start index
-        start_index = random.randint(0, len(seq) - 1 - seq_len * 2)
-        seq = seq[start_index:]
-        # Apply random augmentations
-        seq = augment(seq)
-        # Take first N elements. After augmentation seq len changes.
-        seq = itertools.islice(seq, seq_len)
-        seq = gen_to_tensor(seq)
-        assert seq.size() == (seq_len,), seq.size()
-
-        return (
-            seq,
-            # Need to retain the tensor object. Hence slicing is used.
-            torch.LongTensor(style_tags[seq_id:seq_id+1])
-        )
-    return sample
-
-def batcher(sampler, batch_size, seq_len=SEQ_LEN):
-    """
-    Bundles samples into batches
-    """
-    def batch():
-        batch = [sampler(seq_len) for i in range(batch_size)]
-        return [torch.stack(x) for x in zip(*batch)]
-    return batch 
-
-def stretch_sequence(sequence, stretch_scale):
-    """ Iterate through sequence and stretch each time shift event by a factor """
-    # Accumulated time in seconds
-    time_sum = 0
-    seq_len = 0
-    for i, evt in enumerate(sequence):
-        if evt >= TIME_OFFSET and evt < VEL_OFFSET:
-            # This is a time shift event
-            # Convert time event to number of seconds
-            # Then, accumulate the time
-            time_sum += convert_time_evt_to_sec(evt)
-        else:
-            if i > 0:
-                # Once there is a non time shift event, we take the
-                # buffered time and add it with time stretch applied.
-                for x in seconds_to_events(time_sum * stretch_scale):
-                    yield x
-                # Reset tracking variables
-                time_sum = 0
-            seq_len += 1
-            yield evt
-
-    # Edge case where last events are time shift events
-    if time_sum > 0:
-        for x in seconds_to_events(time_sum * stretch_scale):
-            seq_len += 1
-            yield x
-
-    # Pad sequence with empty events if seq len not enough
-    if seq_len < SEQ_LEN:
-        for x in range(SEQ_LEN - seq_len):
-            yield TIME_OFFSET
-            
-def transpose(sequence):
-    """ A generator that represents the sequence. """
-    # Transpose by 4 semitones at most
-    transpose = random.randint(-4, 4)
-
-    if transpose == 0:
-        return sequence
-
-    # Perform transposition (consider only notes)
-    return (evt + transpose if evt < TIME_OFFSET else evt for evt in sequence)
-
-def augment(sequence):
-    """
-    Takes a sequence of events and randomly perform augmentations.
-    """
-    sequence = transpose(sequence)
-    sequence = stretch_sequence(sequence, random.uniform(1.0, 1.25))
-    return sequence
+    return np.pad(sequence, ((0, 0), (MIN_NOTE, 0), (0, 0)), 'constant')

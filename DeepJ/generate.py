@@ -1,153 +1,157 @@
 import numpy as np
+import tensorflow as tf
+from collections import deque
+import midi
 import argparse
-import heapq
 
-import torch
-import torch.nn as nn
-from torch.autograd import Variable
-from tqdm import trange
-
-from midi_io import *
-from dataset import *
 from constants import *
 from util import *
-from model import DeepJ
+from dataset import *
+from tqdm import tqdm
+from midi_util import midi_encode
 
-class Generation():
+class MusicGeneration:
     """
-    Represents a music generation sequence
+    Represents a music generation
     """
+    def __init__(self, style, default_temp=1):
+        self.notes_memory = deque([np.zeros((NUM_NOTES, NOTE_UNITS)) for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
+        self.beat_memory = deque([np.zeros(NOTES_PER_BAR) for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
+        self.style_memory = deque([style for _ in range(SEQ_LEN)], maxlen=SEQ_LEN)
 
-    def __init__(self, model, style=None, default_temp=1, beam_size=1, adaptive=False):
-        self.model = model
+        # The next note being built
+        self.next_note = np.zeros((NUM_NOTES, NOTE_UNITS))
+        self.silent_time = NOTES_PER_BAR
 
-        self.beam_size = beam_size
-
-        self.style = style
-
-        # Temperature of generation
+        # The outputs
+        self.results = []
+        # The temperature
         self.default_temp = default_temp
-        self.temperature = self.default_temp
+        self.temperature = default_temp
 
-        # Model parametrs
-        self.beam = [
-            (1, tuple(), None)
-        ]
-        self.avg_seq_prob = 1
-        self.step_count = 0
-        self.adaptive_temp = adaptive
+    def build_time_inputs(self):
+        return (
+            np.array(self.notes_memory),
+            np.array(self.beat_memory),
+            np.array(self.style_memory)
+        )
 
-    def step(self):
+    def build_note_inputs(self, note_features):
+        # Timesteps = 1 (No temporal dimension)
+        return (
+            np.array(note_features),
+            np.array([self.next_note]),
+            np.array(list(self.style_memory)[-1:])
+        )
+
+    def choose(self, prob, n):
+        vol = prob[n, -1]
+        prob = apply_temperature(prob[n, :-1], self.temperature)
+
+        # Flip notes randomly
+        if np.random.random() <= prob[0]:
+            self.next_note[n, 0] = 1
+            # Apply volume
+            self.next_note[n, 2] = vol
+            # Flip articulation
+            if np.random.random() <= prob[1]:
+                self.next_note[n, 1] = 1
+
+    def end_time(self, t):
         """
-        Generates the next set of beams
+        Finish generation for this time step.
         """
-        # Create variables
-        style = var(to_torch(self.style), volatile=True).unsqueeze(0)
+        # Increase temperature while silent.
+        if np.count_nonzero(self.next_note) == 0:
+            self.silent_time += 1
+            if self.silent_time >= NOTES_PER_BAR:
+                self.temperature += 0.1
+        else:
+            self.silent_time = 0
+            self.temperature = self.default_temp
 
-        new_beam = []
-        sum_seq_prob = 0
+        self.notes_memory.append(self.next_note)
+        # Consistent with dataset representation
+        self.beat_memory.append(compute_beat(t, NOTES_PER_BAR))
+        self.results.append(self.next_note)
+        # Reset next note
+        self.next_note = np.zeros((NUM_NOTES, NOTE_UNITS))
+        return self.results[-1]
 
-        # Iterate through the beam
-        for prev_prob, evts, state in self.beam:
-            if len(evts) > 0:
-                prev_event = var(to_torch(one_hot(evts[-1], NUM_ACTIONS)), volatile=True).unsqueeze(0)
-            else:
-                prev_event = var(torch.zeros((1, NUM_ACTIONS)), volatile=True)
+def apply_temperature(prob, temperature):
+    """
+    Applies temperature to a sigmoid vector.
+    """
+    # Apply temperature
+    if temperature != 1:
+        # Inverse sigmoid
+        x = -np.log(1 / prob - 1)
+        # Apply temperature to sigmoid function
+        prob = 1 / (1 + np.exp(-x / temperature))
+    return prob
 
-            prev_event = prev_event.unsqueeze(1)
-            probs, new_state = self.model.generate(prev_event, style, state, temperature=self.temperature)
-            probs = probs.squeeze(1)
+def process_inputs(ins):
+    ins = list(zip(*ins))
+    ins = [np.array(i) for i in ins]
+    return ins
 
-            for _ in range(self.beam_size):
-                # Sample action
-                output = probs.multinomial().data
-                event = output[0, 0]
-                
-                # Create next beam
-                seq_prob = prev_prob * probs.data[0, event]
-                # Boost the sequence probability by the average
-                new_beam.append((seq_prob / self.avg_seq_prob, evts + (event,), new_state))
-                sum_seq_prob += seq_prob
+def generate(models, num_bars, styles):
+    print('Generating with styles:', styles)
 
-        self.avg_seq_prob = sum_seq_prob / len(new_beam)
-        # Find the top most probable sequences
-        self.beam = heapq.nlargest(self.beam_size, new_beam, key=lambda x: x[0])
+    _, time_model, note_model = models
+    generations = [MusicGeneration(style) for style in styles]
 
-        if self.adaptive_temp and self.step_count > 50:
-            r = repetitiveness(self.beam[0][1][-50:])
-            if r < 0.1:
-                self.temperature = self.default_temp
-            else:
-                self.temperature += 0.05
-        
-        self.step_count += 1
+    for t in tqdm(range(NOTES_PER_BAR * num_bars)):
+        # Produce note-invariant features
+        ins = process_inputs([g.build_time_inputs() for g in generations])
+        # Pick only the last time step
+        note_features = time_model.predict(ins)
+        note_features = np.array(note_features)[:, -1:, :]
 
-    def generate(self, seq_len=1000, show_progress=True):
-        self.model.eval()
-        r = trange(seq_len) if show_progress else range(seq_len)
+        # Generate each note conditioned on previous
+        for n in range(NUM_NOTES):
+            ins = process_inputs([g.build_note_inputs(note_features[i, :, :, :]) for i, g in enumerate(generations)])
+            predictions = np.array(note_model.predict(ins))
 
-        for _ in r:
-            self.step()
+            for i, g in enumerate(generations):
+                # Remove the temporal dimension
+                g.choose(predictions[i][-1], n)
 
-        best = max(self.beam, key=lambda x: x[0])
-        best_seq = best[1]
-        return np.array(best_seq)
+        # Move one time step
+        yield [g.end_time(t) for g in generations]
 
-    def export(self, name='output', seq_len=1000, show_progress=True):
-        """
-        Export into a MIDI file.
-        """
-        seq = self.generate(seq_len, show_progress=show_progress)
-        save_midi(name, seq)
+def write_file(name, results):
+    """
+    Takes a list of all notes generated per track and writes it to file
+    """
+    results = zip(*list(results))
 
-def main():
+    for i, result in enumerate(results):
+        fpath = os.path.join(SAMPLES_DIR, name + '_' + str(i) + '.mid')
+        print('Writing file', fpath)
+        os.makedirs(os.path.dirname(fpath), exist_ok=True)
+        mf = midi_encode(unclamp_midi(result))
+        midi.write_midifile(fpath, mf)
+
+def main(): 
     parser = argparse.ArgumentParser(description='Generates music.')
-    parser.add_argument('--fname', default='output', help='Name of the output file')
-    parser.add_argument('--model', help='Path to model file')
-    parser.add_argument('--length', default=5000, type=int, help='Length of generation')
-    parser.add_argument('--style', default=None, type=int, nargs='+', help='Specify the styles to mix together. By default will generate all possible styles.')
-    parser.add_argument('--temperature', default=0.9, type=float, help='Temperature of generation')
-    parser.add_argument('--beam', default=1, type=int, help='Beam size')
-    parser.add_argument('--adaptive', default=False, action='store_true', help='Adaptive temperature')
-    parser.add_argument('--synth', default=False, action='store_true', help='Synthesize output in MP3')
+    parser.add_argument('--bars', default=32, type=int, help='Number of bars to generate')
+    parser.add_argument('--styles', default=None, type=int, nargs='+', help='Styles to mix together')
     args = parser.parse_args()
 
-    styles = []
+    models = build_or_load()
 
-    if args.style:
+    styles = [compute_genre(i) for i in range(len(genre))]
+
+    # print (styles[2]) 
+
+    if args.styles:
         # Custom style
-        styles = [np.mean([one_hot(i, NUM_STYLES) for i in args.style], axis=0)]
-    else:
-        # Generate all possible style
-        styles = [one_hot(i, NUM_STYLES) for i in range(len(STYLES))]
-    
-    print('=== Loading Model ===')
-    print('Path: {}'.format(args.model))
-    print('Temperature: {}'.format(args.temperature))
-    print('Beam: {}'.format(args.beam))
-    print('Adaptive Temperature: {}'.format(args.adaptive))
-    print('Styles: {}'.format(styles))
-    settings['force_cpu'] = True
-    
-    model = DeepJ()
+        styles = [np.mean([one_hot(i, NUM_STYLES) for i in args.styles], axis=0)]
+        # print (styles, "pop")
 
-    if args.model:
-        model.load_state_dict(torch.load(args.model))
-    else:
-        print('WARNING: No model loaded! Please specify model path.')
 
-    print('=== Generating ===')
-
-    for style in styles:
-        fname = args.fname + str(list(style))
-        print('File: {}'.format(fname))
-        generation = Generation(model, style=style, default_temp=args.temperature, beam_size=args.beam, adaptive=args.adaptive)
-        generation.export(name=fname, seq_len=args.length)
-
-        if args.synth:
-            data = synthesize(os.path.join(SAMPLES_DIR, fname + '.mid'))
-            with open(os.path.join(SAMPLES_DIR, fname + '.mp3'), 'wb') as f:
-                f.write(data)
+    write_file('output', generate(models, args.bars, styles))
 
 if __name__ == '__main__':
     main()

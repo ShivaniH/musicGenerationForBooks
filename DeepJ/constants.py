@@ -1,44 +1,100 @@
-### MIDI Parameters ###
-MIDI_VELOCITY = 128
-# Number of possible notes
-NUM_NOTES = 128
-# Number of time shift quantizations
-TIME_QUANTIZATION = 32
-# Exponential representation of time shifts
-TICK_EXP = 1.14
-TICK_MUL = 1
-# The number of ticks represented in each bin
-TICK_BINS = [int(TICK_EXP ** x + TICK_MUL * x) for x in range(TIME_QUANTIZATION)]
-# Ticks per second
-TICKS_PER_SEC = 100
-# Number of velocity buns
-VEL_QUANTIZATION = 32
+import os
 
-NOTE_ON_OFFSET = 0
-TIME_OFFSET = NOTE_ON_OFFSET + NUM_NOTES
-VEL_OFFSET = TIME_OFFSET + TIME_QUANTIZATION
-NUM_ACTIONS = VEL_OFFSET + VEL_QUANTIZATION
+# Define the musical styles
+genre = [
+    'cluster_1',
+    'cluster_2',
+    'cluster_3',
+    'cluster_4',
+    'cluster_5',
+]
 
-# Trainin Parameters
-SEQ_LEN = 1024 + 1
-GRADIENT_CLIP = 10
-SCALE_FACTOR = 2 ** 10
-# The number of train generator cycles per sequence
-TRAIN_CYCLES = 1000
-VAL_CYCLES = int(TRAIN_CYCLES * 0.05)
+styles = [
+    [
+        'data/cluster_1/Boisterous',
+        'data/cluster_1/Confident',
+        'data/cluster_1/Passionate',
+        'data/cluster_1/Rousing',
+        'data/cluster_1/Rowdy'
+    ],
+    [
+        'data/cluster_2/Amiable_good_natured',
+        'data/cluster_2/Cheerful',
+        'data/cluster_2/Fun',
+        'data/cluster_2/Rollicking',
+        'data/cluster_2/Sweet'
 
-# Style
-STYLES = ['data/baroque', 'data/classical', 'data/romantic', 'data/modern']
-NUM_STYLES = len(STYLES)
+    ],
+    [
+        'data/cluster_3/Autumnal',
+        'data/cluster_3/Bittersweet',
+        'data/cluster_3/Brooding',
+        'data/cluster_3/Literate',
+        'data/cluster_3/Poignant',
+        'data/cluster_3/Wistful'
+      
+    ],
+    [
+        'data/cluster_4/Campy',
+        'data/cluster_4/Humorous',
+        'data/cluster_4/Silly',
+        'data/cluster_4/whimsical',
+        'data/cluster_4/Witty',
+        'data/cluster_4/Wry'
+      
+    ],
+    [
+        'data/cluster_5/Agressive',
+        'data/cluster_5/Fiery',
+        'data/cluster_5/Intense',
+        'data/cluster_5/Tense_Anxious',
+        'data/cluster_5/Visceral',
+        'data/cluster_5/Volatile'
+      
+    ]
 
-# Paths
+]
+
+NUM_STYLES = sum(len(s) for s in styles)
+
+# MIDI Resolution
+DEFAULT_RES = 96
+MIDI_MAX_NOTES = 128
+MAX_VELOCITY = 127
+
+# Number of octaves supported
+NUM_OCTAVES = 4
+OCTAVE = 12
+
+# Min and max note (in MIDI note number)
+MIN_NOTE = 36
+MAX_NOTE = MIN_NOTE + NUM_OCTAVES * OCTAVE
+NUM_NOTES = MAX_NOTE - MIN_NOTE
+
+# Number of beats in a bar
+BEATS_PER_BAR = 4
+# Notes per quarter note
+NOTES_PER_BEAT = 4
+# The quickest note is a half-note
+NOTES_PER_BAR = NOTES_PER_BEAT * BEATS_PER_BAR
+
+# Training parameters
+BATCH_SIZE = 16
+SEQ_LEN = 8 * NOTES_PER_BAR
+
+# Hyper Parameters
+OCTAVE_UNITS = 64
+STYLE_UNITS = 64
+NOTE_UNITS = 3
+TIME_AXIS_UNITS = 256
+NOTE_AXIS_UNITS = 128
+
+TIME_AXIS_LAYERS = 2
+NOTE_AXIS_LAYERS = 2
+
+# Move file save location
 OUT_DIR = 'out'
-CACHE_DIR = 'out/cache'
-SAMPLES_DIR = 'out/samples'
-# Synthesizer sound file
-SOUND_FONT_PATH = CACHE_DIR + '/soundfont.sf2'
-SOUND_FONT_URL = 'http://zenvoid.org/audio/acoustic_grand_piano_ydp_20080910.sf2'
-
-settings = {
-    'force_cpu': False
-}
+MODEL_DIR = os.path.join(OUT_DIR, 'models')
+MODEL_FILE = os.path.join(OUT_DIR, 'model.h5')
+SAMPLES_DIR = os.path.join(OUT_DIR, 'samples')
+CACHE_DIR = os.path.join(OUT_DIR, 'cache')

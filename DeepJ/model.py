@@ -1,113 +1,169 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from torch.autograd import Variable
-from constants import *
-from util import *
 import numpy as np
+import tensorflow as tf
+from keras.layers import Input, LSTM, Dense, Dropout, Lambda, Reshape, Permute
+from keras.layers import TimeDistributed, RepeatVector, Conv1D, Activation
+from keras.layers import Embedding, Flatten
+from keras.layers.merge import Concatenate, Add
+from keras.models import Model
+import keras.backend as K
+from keras import losses
 
-class DeepJ(nn.Module):
+from util import *
+from constants import *
+
+def primary_loss(y_true, y_pred):
+    # 3 separate loss calculations based on if note is played or not
+    played = y_true[:, :, :, 0]
+    bce_note = losses.binary_crossentropy(y_true[:, :, :, 0], y_pred[:, :, :, 0])
+    bce_replay = losses.binary_crossentropy(y_true[:, :, :, 1], tf.multiply(played, y_pred[:, :, :, 1]) + tf.multiply(1 - played, y_true[:, :, :, 1]))
+    mse = losses.mean_squared_error(y_true[:, :, :, 2], tf.multiply(played, y_pred[:, :, :, 2]) + tf.multiply(1 - played, y_true[:, :, :, 2]))
+    return bce_note + bce_replay + mse
+
+def pitch_pos_in_f(time_steps):
     """
-    The DeepJ neural network model architecture.
+    Returns a constant containing pitch position of each note
     """
-    def __init__(self, num_units=512, num_layers=4, style_units=32):
-        super().__init__()
-        self.num_units = num_units
-        self.num_layers = num_layers
-        self.style_units = style_units
+    def f(x):
+        note_ranges = tf.range(NUM_NOTES, dtype='float32') / NUM_NOTES
+        repeated_ranges = tf.tile(note_ranges, [tf.shape(x)[0] * time_steps])
+        return tf.reshape(repeated_ranges, [tf.shape(x)[0], time_steps, NUM_NOTES, 1])
+    return f
 
-        # RNN
-        self.rnns = [
-            nn.GRU(NUM_ACTIONS + style_units, num_units, 2, batch_first=True) if i == 0 else 
-            DilatedRNN(nn.GRU(num_units, num_units, batch_first=True), 2 ** i)
-            for i in range(num_layers)
-        ]
+def pitch_class_in_f(time_steps):
+    """
+    Returns a constant containing pitch class of each note
+    """
+    def f(x):
+        pitch_class_matrix = np.array([one_hot(n % OCTAVE, OCTAVE) for n in range(NUM_NOTES)])
+        pitch_class_matrix = tf.constant(pitch_class_matrix, dtype='float32')
+        pitch_class_matrix = tf.reshape(pitch_class_matrix, [1, 1, NUM_NOTES, OCTAVE])
+        return tf.tile(pitch_class_matrix, [tf.shape(x)[0], time_steps, 1, 1])
+    return f
 
-        self.output_linear = nn.Linear(self.num_units, NUM_ACTIONS)
+def pitch_bins_f(time_steps):
+    def f(x):
+        bins = tf.reduce_sum([x[:, :, i::OCTAVE, 0] for i in range(OCTAVE)], axis=3)
+        bins = tf.tile(bins, [NUM_OCTAVES, 1, 1])
+        bins = tf.reshape(bins, [tf.shape(x)[0], time_steps, NUM_NOTES, 1])
+        return bins
+    return f
 
-        for i, rnn in enumerate(self.rnns):
-            self.add_module('rnn_' + str(i), rnn)
+def time_axis(dropout):
+    def f(notes, beat, style):
+        time_steps = int(notes.get_shape()[1])
 
-        # Style
-        self.style_linear = nn.Linear(NUM_STYLES, self.style_units)
-        # self.style_layer = nn.Linear(self.style_units, self.num_units * self.num_layers)
+        # TODO: Experiment with when to apply conv
+        note_octave = TimeDistributed(Conv1D(OCTAVE_UNITS, 2 * OCTAVE, padding='same'))(notes)
+        note_octave = Activation('tanh')(note_octave)
+        note_octave = Dropout(dropout)(note_octave)
 
-    def forward(self, x, style, states=None):
-        batch_size = x.size(0)
-        seq_len = x.size(1)
+        # Create features for every single note.
+        note_features = Concatenate()([
+            Lambda(pitch_pos_in_f(time_steps))(notes),
+            Lambda(pitch_class_in_f(time_steps))(notes),
+            Lambda(pitch_bins_f(time_steps))(notes),
+            note_octave,
+            TimeDistributed(RepeatVector(NUM_NOTES))(beat)
+        ])
 
-        # Distributed style representation
-        style = self.style_linear(style)
-        # style = F.tanh(self.style_layer(style))
-        style = style.unsqueeze(1).expand(batch_size, seq_len, self.style_units)
-        x = torch.cat((x, style), dim=2)
+        x = note_features
 
-        ## Process RNN ##
-        if states is None:
-            states = [None for _ in range(self.num_layers)]
+        # [batch, notes, time, features]
+        x = Permute((2, 1, 3))(x)
 
-        for l, rnn in enumerate(self.rnns):
-            prev_x = x
-            x, states[l] = rnn(x, states[l])
+        # Apply LSTMs
+        for l in range(TIME_AXIS_LAYERS):
+            # Integrate style
+            style_proj = Dense(int(x.get_shape()[3]))(style)
+            style_proj = TimeDistributed(RepeatVector(NUM_NOTES))(style_proj)
+            style_proj = Activation('tanh')(style_proj)
+            style_proj = Dropout(dropout)(style_proj)
+            style_proj = Permute((2, 1, 3))(style_proj)
+            x = Add()([x, style_proj])
 
-            if l > 0:
-                x = prev_x + x
+            x = TimeDistributed(LSTM(TIME_AXIS_UNITS, return_sequences=True))(x)
+            x = Dropout(dropout)(x)
 
-        x = self.output_linear(x)
-        return x, states
+        # [batch, time, notes, features]
+        return Permute((2, 1, 3))(x)
+    return f
 
-    def generate(self, x, style, states, temperature=1):
-        """ Returns the probability of outputs """
-        x, states = self.forward(x, style, states)
-        seq_len = x.size(1)
-        x = x.view(-1, NUM_ACTIONS)
-        x = F.softmax(x / temperature, dim=1)
-        x = x.view(-1, seq_len, NUM_ACTIONS)
-        return x, states
+def note_axis(dropout):
+    dense_layer_cache = {}
+    lstm_layer_cache = {}
+    note_dense = Dense(2, activation='sigmoid', name='note_dense')
+    volume_dense = Dense(1, name='volume_dense')
 
-class DilatedRNN(nn.Module):
-    """ https://arxiv.org/pdf/1710.02224.pdf """
-    def __init__(self, wrap_rnn, dilation=1):
-        """
-        Args:
-            wrap_rnn: The RNN module to wrap.
-            dilation: The dilation factor
-        """
-        super().__init__()
-        assert wrap_rnn.batch_first
-        self.rnn = wrap_rnn
-        self.dilation = dilation
-    
-    def forward(self, x, states):
-        """
-        Args:
-            x: A sequence of features [batch, seq_len, features]
-        """
-        # The number of dilation = the number of parallelism that can be achieved.
-        # Move the additional parallels into batch dimension
-        batch_size = x.size(0)
-        seq_len = x.size(1)
-        if seq_len == 1:
-            # Single step requires us to store which step we are on.
-            if states is None:
-                # Each memory tensor corresponds to a dilation.
-                states = (0, tuple(None for _ in range(self.dilation)))
-            step, memories = states
-            memory_id = step % self.dilation
-            x, memory = self.rnn(x, memories[memory_id])
-            states = (step + 1, memories[:memory_id] + (memory,) + memories[memory_id + 1:])
-            return x, states
+    def f(x, chosen, style):
+        time_steps = int(x.get_shape()[1])
 
-        # Taking in a full sequence
-        assert seq_len % self.dilation == 0, seq_len
-        x = x.unfold(1, self.dilation, self.dilation)
-        x = x.permute(0, 3, 1, 2)
-        x = x.contiguous().view(batch_size * self.dilation, seq_len // self.dilation, -1)
-        x, states = self.rnn(x, states)
-        # X is now [batch * dilation, seq_len//dilation, features]
-        # We want to restore it back into [batch, seq_len, features]
-        # But we can't simply reshape it, because that messes up the order.
-        x = x.contiguous().view(batch_size, self.dilation, seq_len // self.dilation, -1)
-        x = x.permute(0, 2, 1, 3)
-        x = x.contiguous().view(batch_size, seq_len, -1)
-        return x, states
+        # Shift target one note to the left.
+        shift_chosen = Lambda(lambda x: tf.pad(x[:, :, :-1, :], [[0, 0], [0, 0], [1, 0], [0, 0]]))(chosen)
+
+        # [batch, time, notes, 1]
+        shift_chosen = Reshape((time_steps, NUM_NOTES, -1))(shift_chosen)
+        # [batch, time, notes, features + 1]
+        x = Concatenate(axis=3)([x, shift_chosen])
+
+        for l in range(NOTE_AXIS_LAYERS):
+            # Integrate style
+            if l not in dense_layer_cache:
+                dense_layer_cache[l] = Dense(int(x.get_shape()[3]))
+
+            style_proj = dense_layer_cache[l](style)
+            style_proj = TimeDistributed(RepeatVector(NUM_NOTES))(style_proj)
+            style_proj = Activation('tanh')(style_proj)
+            style_proj = Dropout(dropout)(style_proj)
+            x = Add()([x, style_proj])
+
+            if l not in lstm_layer_cache:
+                lstm_layer_cache[l] = LSTM(NOTE_AXIS_UNITS, return_sequences=True)
+
+            x = TimeDistributed(lstm_layer_cache[l])(x)
+            x = Dropout(dropout)(x)
+
+        return Concatenate()([note_dense(x), volume_dense(x)])
+    return f
+
+def build_models(time_steps=SEQ_LEN, input_dropout=0.2, dropout=0.5):
+    notes_in = Input((time_steps, NUM_NOTES, NOTE_UNITS))
+    beat_in = Input((time_steps, NOTES_PER_BAR))
+    style_in = Input((time_steps, NUM_STYLES))
+    # Target input for conditioning
+    chosen_in = Input((time_steps, NUM_NOTES, NOTE_UNITS))
+
+    # Dropout inputs
+    notes = Dropout(input_dropout)(notes_in)
+    beat = Dropout(input_dropout)(beat_in)
+    chosen = Dropout(input_dropout)(chosen_in)
+
+    # Distributed representations
+    style_l = Dense(STYLE_UNITS, name='style')
+    style = style_l(style_in)
+
+    """ Time axis """
+    time_out = time_axis(dropout)(notes, beat, style)
+
+    """ Note Axis & Prediction Layer """
+    naxis = note_axis(dropout)
+    notes_out = naxis(time_out, chosen, style)
+
+    model = Model([notes_in, chosen_in, beat_in, style_in], [notes_out])
+    model.compile(optimizer='nadam', loss=[primary_loss])
+
+    """ Generation Models """
+    time_model = Model([notes_in, beat_in, style_in], [time_out])
+
+    note_features = Input((1, NUM_NOTES, TIME_AXIS_UNITS), name='note_features')
+    chosen_gen_in = Input((1, NUM_NOTES, NOTE_UNITS), name='chosen_gen_in')
+    style_gen_in = Input((1, NUM_STYLES), name='style_in')
+
+    # Dropout inputs
+    chosen_gen = Dropout(input_dropout)(chosen_gen_in)
+    style_gen = style_l(style_gen_in)
+
+    note_gen_out = naxis(note_features, chosen_gen, style_gen)
+
+    note_model = Model([note_features, chosen_gen_in, style_gen_in], note_gen_out)
+
+    return model, time_model, note_model
