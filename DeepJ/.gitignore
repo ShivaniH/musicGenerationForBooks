@@ -1,0 +1,6 @@
+*.pyc
+out
+data
+.DS_Store
+*.sf2
+.vscode

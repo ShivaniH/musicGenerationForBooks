@@ -1,0 +1,10 @@
+version: '2'
+
+services:
+  deepj:
+    build: .
+    image: deepj
+    volumes:
+      - .:/src/
+    environment:
+      - LC_CTYPE=C.UTF-8
